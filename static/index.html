@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>書類読み取り</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #667085; --line: #d9dde3;
+    --accent: #1f6feb; --accent-text: #fff; --warn-bg: #fff4d6; --warn-line: #e3b341;
+    --ng: #c62828; --ok: #2e7d32; --edited: #e8f1ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #98a2b3; --line: #2f3643;
+      --accent: #4c8dff; --accent-text: #fff; --warn-bg: #3a3014; --warn-line: #a8862a;
+      --ng: #ff7b72; --ok: #6fcf7a; --edited: #1d2c45;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+         font-size: 16px; line-height: 1.5; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.25rem; margin: 4px 0 12px; }
+  h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 16px; margin-bottom: 16px; }
+  .muted { color: var(--muted); font-size: .875rem; }
+  .hidden { display: none !important; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 12px; font-size: 16px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--bg); color: var(--text); }
+  button { appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+           padding: 10px 14px; border-radius: 8px; font-size: 15px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+                   width: 100%; padding: 14px; font-size: 16px; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .stack > * + * { margin-top: 12px; }
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .modes label { display: block; border: 1px solid var(--line); border-radius: 10px; padding: 10px 8px;
+                 text-align: center; cursor: pointer; }
+  .modes input { position: absolute; opacity: 0; pointer-events: none; }
+  .modes input:checked + label { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .modes input:focus-visible + label { outline: 2px solid var(--accent); }
+  .modes strong { display: block; font-size: 15px; }
+  .modes span { font-size: 12px; color: var(--muted); }
+  .file-label { display: block; border: 2px dashed var(--line); border-radius: 12px; padding: 24px 12px;
+                text-align: center; cursor: pointer; }
+  .file-label input { display: none; }
+  progress { width: 100%; height: 10px; }
+  .notice { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 10px 12px; }
+  .error { color: var(--ng); font-weight: 600; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 14px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); white-space: nowrap; font-weight: 600; position: sticky; top: 0; }
+  td[contenteditable] { min-width: 80px; outline: none; }
+  td[contenteditable]:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+  td.low { background: var(--warn-bg); }
+  td.edited { background: var(--edited); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.nowrap { white-space: nowrap; }
+  .badge { display: inline-block; font-size: 12px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .badge.ok { color: var(--ok); } .badge.ng { color: var(--ng); } .badge.na { color: var(--muted); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 8px 0; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+                         margin-right: 4px; vertical-align: -1px; border: 1px solid var(--line); }
+  .legend .l-low::before { background: var(--warn-bg); } .legend .l-ed::before { background: var(--edited); }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text);
+           color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="row" style="justify-content:space-between">
+    <h1>動画から書類を読み取り</h1>
+    <button id="logout" class="hidden" type="button">ログアウト</button>
+  </div>
+
+  <!-- ログイン -->
+  <section id="login-view" class="card stack hidden">
+    <h2>招待コードを入力</h2>
+    <input id="code" type="password" autocomplete="one-time-code" placeholder="招待コード">
+    <button id="login-btn" class="primary" type="button">はじめる</button>
+    <p id="login-err" class="error hidden"></p>
+  </section>
+
+  <!-- アップロード -->
+  <section id="upload-view" class="card stack hidden">
+    <p class="muted" id="limits"></p>
+    <div class="modes" role="radiogroup" aria-label="読み取る書類">
+      <input type="radio" name="mode" id="m-expense" value="expense"><label for="m-expense"><strong>経費精算</strong><span>受け取った領収書</span></label>
+      <input type="radio" name="mode" id="m-sales" value="sales"><label for="m-sales"><strong>売上管理</strong><span>発行した領収書</span></label>
+      <input type="radio" name="mode" id="m-bizcard" value="bizcard"><label for="m-bizcard"><strong>名刺</strong><span>名刺の整理</span></label>
+    </div>
+    <p id="issuer-warn" class="notice hidden">発行者情報（SELF_NAME 等）が設定されていないため、発行者の照合は行いません。</p>
+    <label class="file-label">
+      <input id="file" type="file" accept="video/mp4,video/quicktime,.mp4,.mov">
+      <strong id="file-name">動画を選ぶ（mp4 / mov）</strong><br>
+      <span class="muted" id="file-hint"></span>
+    </label>
+    <button id="upload-btn" class="primary" type="button" disabled>解析する</button>
+    <p class="muted">動画は解析が終わるとすぐに削除されます。結果は<span id="ttl">60</span>分後に消えるので、必要な分はCSVで保存してください。</p>
+  </section>
+
+  <!-- 進行状況 -->
+  <section id="status-view" class="card stack hidden">
+    <div id="status-text">アップロード中…</div>
+    <progress id="progress" max="100"></progress>
+    <div id="notice" class="notice hidden"></div>
+    <p id="status-err" class="error hidden"></p>
+  </section>
+
+  <!-- 結果 -->
+  <section id="result-view" class="hidden">
+    <div id="result-notice" class="notice hidden" style="margin-bottom:16px"></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2><span id="result-title"></span> <span id="result-count" class="muted"></span></h2>
+        <div class="row">
+          <button type="button" id="copy-btn">コピー</button>
+          <button type="button" id="csv-btn">CSV保存</button>
+        </div>
+      </div>
+      <p id="issuer-line" class="muted hidden"></p>
+      <div class="legend"><span class="l-low">要確認（推定した項目・読み取りに自信がない項目）</span><span class="l-ed">手で修正済み</span></div>
+      <div class="table-wrap"><table id="result-table"></table></div>
+    </div>
+    <button id="again" class="primary" type="button">別の動画を解析する</button>
+  </section>
+</main>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const DOC_LABEL = { receipt: "領収書/レシート", invoice: "請求書" };
+
+// 列定義: [キー, 見出し, 手で編集できるか]。キーが _ で始まる列は計算列
+const MODES = {
+  expense: {
+    title: "経費精算（受け取った領収書）", file: "expense",
+    hint: "受け取った領収書・レシート・請求書を1枚ずつ、ゆっくり映してください",
+    cols: [["doc_type", "種別", false], ["date", "日付", true], ["account_title", "勘定科目(候補)", true],
+           ["payee", "支払先", true], ["amount", "金額(税込)", true], ["invoice_number", "登録番号", true],
+           ["_invoice", "番号チェック", false], ["first_seen", "映った時刻", false]],
+    csvExtra: [],
+  },
+  sales: {
+    title: "売上管理（発行した領収書）", file: "sales",
+    hint: "発行した領収書の控え・写しを1枚ずつ、ゆっくり映してください",
+    cols: [["issue_date", "発行日", true], ["customer_name", "宛名", true], ["amount_total", "金額(税込)", true],
+           ["amount_excl_tax", "税抜", true], ["tax_amount", "税額", true], ["tax_rate", "税率", true],
+           ["purpose", "但し書き", true], ["sales_category", "売上区分(候補)", true], ["receipt_no", "領収書番号", true],
+           ["payment_method", "支払方法", true], ["_issuer", "発行者チェック", false], ["first_seen", "映った時刻", false]],
+    // CSVには発行者情報（設定値）も入れる
+    csvExtra: [["issuer_name", "発行者名"], ["issuer_invoice_no", "発行者登録番号"], ["issuer_address", "発行者住所"]],
+  },
+  bizcard: {
+    title: "名刺", file: "business_cards",
+    hint: "名刺を1枚ずつ、ゆっくり映してください",
+    cols: [["company", "会社名", true], ["name", "氏名", true], ["title", "役職", true], ["department", "部署", true],
+           ["address", "住所", true], ["phone", "電話", true], ["email", "メール", true], ["first_seen", "映った時刻", false]],
+    csvExtra: [],
+  },
+};
+const NUM_KEYS = new Set(["amount", "amount_total", "amount_excl_tax", "tax_amount"]);
+let me = null, pollTimer = null, current = null; // current = { mode, docs }
+
+function show(...ids) {
+  for (const id of ["login-view", "upload-view", "status-view", "result-view"]) $(id).classList.toggle("hidden", !ids.includes(id));
+  $("logout").classList.toggle("hidden", ids.includes("login-view"));
+}
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.remove("hidden"); setTimeout(() => t.classList.add("hidden"), 1800); }
+function store(area, k, v) { try { const s = area === "local" ? localStorage : sessionStorage; v == null ? s.removeItem(k) : s.setItem(k, v); } catch (e) {} }
+function load(area, k) { try { return (area === "local" ? localStorage : sessionStorage).getItem(k); } catch (e) { return null; } }
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: "same-origin", ...opts });
+  let body = null; try { body = await r.json(); } catch (e) {}
+  if (!r.ok) { const err = new Error((body && body.detail) || `エラー (${r.status})`); err.status = r.status; throw err; }
+  return body;
+}
+
+// ---------- モード選択（直前の選択を既定値として記憶）
+function selectedMode() { const el = document.querySelector('input[name="mode"]:checked'); return el ? el.value : "expense"; }
+function applyMode(mode) {
+  if (!MODES[mode]) mode = "expense";
+  $(`m-${mode}`).checked = true;
+  $("file-hint").textContent = MODES[mode].hint;
+  $("issuer-warn").classList.toggle("hidden", !(mode === "sales" && me && !me.issuer.name && !me.issuer.invoice_no));
+}
+document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", () => {
+  store("local", "mode", el.value); applyMode(el.value);
+}));
+
+async function init() {
+  try { me = await api("/api/me"); } catch (e) { show("login-view"); return; }
+  renderLimits();
+  applyMode(load("local", "mode") || "expense");
+  const jobId = load("session", "job");
+  if (jobId) { show("status-view"); $("status-text").textContent = "解析中…"; $("progress").removeAttribute("value"); poll(jobId); }
+  else show("upload-view");
+}
+function renderLimits() {
+  const m = Math.floor(me.max_duration_sec / 60);
+  $("ttl").textContent = me.result_ttl_min;
+  $("limits").textContent = `本日あと ${me.remaining_today} 回 ・ 最大 ${me.max_upload_mb}MB ・ 先頭${m}分まで解析` + (me.gemini_mode === "mock" ? " ・ 【モック動作中：固定のサンプル結果を返します】" : "");
+}
+
+$("login-btn").onclick = async () => {
+  $("login-err").classList.add("hidden");
+  try {
+    await api("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: $("code").value }) });
+    $("code").value = ""; init();
+  } catch (e) { $("login-err").textContent = e.message; $("login-err").classList.remove("hidden"); }
+};
+$("code").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-btn").click(); });
+$("logout").onclick = async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); store("session", "job", null); show("login-view"); };
+
+$("file").onchange = () => {
+  const f = $("file").files[0];
+  $("file-name").textContent = f ? `${f.name}（${(f.size / 1048576).toFixed(1)}MB）` : "動画を選ぶ（mp4 / mov）";
+  $("upload-btn").disabled = !f;
+};
+
+$("upload-btn").onclick = () => {
+  const f = $("file").files[0];
+  if (!f) return;
+  if (!/\.(mp4|mov)$/i.test(f.name)) { alert("mp4 または mov 形式の動画を選んでください"); return; }
+  if (f.size > me.max_upload_mb * 1048576) { alert(`ファイルサイズは${me.max_upload_mb}MBまでです`); return; }
+  const mode = selectedMode();
+  show("status-view");
+  $("status-err").classList.add("hidden"); $("notice").classList.add("hidden"); $("notice").textContent = "";
+  $("status-text").textContent = "アップロード中…"; $("progress").value = 0;
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `/api/jobs?mode=${encodeURIComponent(mode)}`);
+  xhr.setRequestHeader("Content-Type", f.type || "video/mp4");
+  xhr.setRequestHeader("X-Filename", encodeURIComponent(f.name));
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("progress").value = Math.round(e.loaded / e.total * 100); };
+  xhr.onload = () => {
+    let body = null; try { body = JSON.parse(xhr.responseText); } catch (e) {}
+    if (xhr.status !== 202) { fail((body && body.detail) || `アップロードに失敗しました (${xhr.status})`); return; }
+    if (body.notice) { $("notice").textContent = body.notice; $("notice").classList.remove("hidden"); }
+    store("session", "job", body.job_id);
+    $("status-text").textContent = "解析中…（1〜3分ほどかかります）"; $("progress").removeAttribute("value");
+    poll(body.job_id);
+  };
+  xhr.onerror = () => fail("通信エラーでアップロードできませんでした");
+  xhr.send(f);
+};
+
+function fail(msg) {
+  store("session", "job", null);
+  $("status-text").textContent = "失敗しました"; $("progress").value = 0;
+  $("status-err").textContent = msg; $("status-err").classList.remove("hidden");
+  const back = document.createElement("button"); back.type = "button"; back.textContent = "戻る";
+  back.onclick = () => { back.remove(); resetUpload(); }; $("status-view").appendChild(back);
+}
+
+function poll(jobId) {
+  clearTimeout(pollTimer);
+  const started = Date.now();
+  const tick = async () => {
+    let job;
+    try { job = await api(`/api/jobs/${jobId}`); }
+    catch (e) { if (e.status === 404 || e.status === 401) { fail(e.message); return; } pollTimer = setTimeout(tick, 4000); return; }
+    if (job.status === "done") { store("session", "job", null); renderResult(job); return; }
+    if (job.status === "error") { fail(job.error || "解析に失敗しました"); return; }
+    $("status-text").textContent = `解析中…（${Math.round((Date.now() - started) / 1000)}秒経過）`;
+    pollTimer = setTimeout(tick, 2000);
+  };
+  tick();
+}
+
+// ---------- チェック表示
+function checkInvoice(v) {
+  if (!v) return "none";
+  const n = v.normalize("NFKC").replace(/[\s\-‐−]/g, "").toUpperCase();
+  return /^T\d{13}$/.test(n) ? "ok" : "invalid";
+}
+function invoiceBadge(d) {
+  const chk = checkInvoice(d.invoice_number);
+  if (chk === "none") return '<span class="badge na">なし</span>';
+  if (chk === "invalid") return '<span class="badge ng">形式NG</span>';
+  const lk = d.invoice_lookup;
+  if (!lk) return '<span class="badge ok">形式OK</span>';
+  const map = { registered: ["ok", "登録あり"], not_found: ["ng", "未登録"], revoked: ["ng", "失効"], error: ["na", "照合エラー"] };
+  const [cls, label] = map[lk.status] || ["na", lk.status];
+  return `<span class="badge ${cls}">${label}</span>` + (lk.name ? `<div class="muted">${esc(lk.name)}</div>` : "");
+}
+const ISSUER_LABEL = { ok: ["ok", "一致"], mismatch: ["ng", "要確認"], not_read: ["na", "読めず"], unset: ["na", "設定なし"] };
+function issuerText(d) { return (ISSUER_LABEL[d.issuer_check] || ["na", ""])[1]; }
+function issuerBadge(d) {
+  const [cls, label] = ISSUER_LABEL[d.issuer_check] || ["na", "-"];
+  let html = `<span class="badge ${cls}">${label}</span>`;
+  if (d.issuer_check === "mismatch") {
+    const seen = [d.issuer_name_in_video, d.issuer_invoice_no_in_video].filter(Boolean).join(" / ");
+    html += `<div class="muted">動画: ${esc(seen)}</div>`;
+  }
+  return html;
+}
+function computed(key, d) {
+  if (key === "_invoice") return { html: invoiceBadge(d), text: { none: "", invalid: "形式NG", ok: "形式OK" }[checkInvoice(d.invoice_number)] };
+  if (key === "_issuer") return { html: issuerBadge(d), text: issuerText(d) };
+  return { html: "", text: "" };
+}
+
+// ---------- 結果表示
+function renderResult(job) {
+  const mode = MODES[job.mode] ? job.mode : "expense";
+  const def = MODES[mode];
+  current = { mode, docs: job.documents || [] };
+  $("result-title").textContent = def.title;
+  $("result-count").textContent = `${current.docs.length}件`;
+
+  const il = $("issuer-line");
+  if (mode === "sales") {
+    const i = me && me.issuer || {};
+    il.textContent = i.name || i.invoice_no
+      ? `発行者（設定値）: ${[i.name, i.invoice_no, i.address].filter(Boolean).join(" / ")}`
+      : "発行者情報が設定されていません（.env の SELF_NAME / SELF_INVOICE_NO / SELF_ADDRESS）";
+    il.classList.remove("hidden");
+  } else il.classList.add("hidden");
+
+  const t = $("result-table");
+  t.innerHTML = "";
+  const head = t.createTHead().insertRow();
+  for (const [, label] of def.cols) { const th = document.createElement("th"); th.textContent = label; head.appendChild(th); }
+  const tbody = t.createTBody();
+  if (!current.docs.length) {
+    const td = tbody.insertRow().insertCell(); td.colSpan = def.cols.length; td.className = "muted"; td.textContent = "見つかりませんでした";
+  }
+  for (const d of current.docs) {
+    const tr = tbody.insertRow();
+    tr._doc = d;
+    for (const [key, , editable] of def.cols) {
+      const td = tr.insertCell();
+      td.dataset.key = key;
+      if (key.startsWith("_")) { td.innerHTML = computed(key, d).html; continue; }
+      const v = d[key];
+      td.textContent = key === "doc_type" ? (DOC_LABEL[v] || v) : (v == null ? "" : String(v));
+      if (NUM_KEYS.has(key)) td.classList.add("num");
+      if (NUM_KEYS.has(key) || /date$|first_seen|receipt_no/.test(key)) td.classList.add("nowrap");
+      if ((d.low_confidence_fields || []).includes(key)) { td.classList.add("low"); td.title = "推定した値か、読み取りに自信がない値です。確認してください"; }
+      if (editable) {
+        td.contentEditable = "plaintext-only";
+        if (td.contentEditable !== "plaintext-only") td.contentEditable = "true";
+        td.addEventListener("input", () => {
+          td.classList.remove("low"); td.classList.add("edited");
+          d[key] = td.textContent.trim() || null;
+          if (key === "invoice_number") { d.invoice_lookup = null; tr.querySelector('[data-key="_invoice"]').innerHTML = invoiceBadge(d); }
+        });
+        td.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); td.blur(); } });
+      }
+    }
+  }
+
+  const notes = [];
+  if ($("notice").textContent) notes.push($("notice").textContent);
+  else if (job.notice) notes.push(job.notice);
+  notes.push(`この結果は約${Math.round(job.expires_in_sec / 60)}分後にサーバから削除されます。`);
+  $("result-notice").textContent = notes.join(" ");
+  $("result-notice").classList.remove("hidden");
+  show("result-view");
+  api("/api/me").then((m) => { me = m; renderLimits(); }).catch(() => {});
+}
+
+// ---------- 出力
+function tableData() {
+  const def = MODES[current.mode];
+  const header = [...def.cols.map((c) => c[1]), ...def.csvExtra.map((c) => c[1])];
+  const rows = [];
+  for (const tr of $("result-table").tBodies[0]?.rows || []) {
+    const d = tr._doc;
+    if (!d) continue;
+    rows.push([
+      ...def.cols.map(([key]) => {
+        if (key.startsWith("_")) return computed(key, d).text;
+        const td = tr.querySelector(`[data-key="${key}"]`);
+        return td ? td.textContent.trim() : "";
+      }),
+      ...def.csvExtra.map(([key]) => (d[key] == null ? "" : String(d[key]))),
+    ]);
+  }
+  return [header, ...rows];
+}
+// 表計算ソフトで数式として解釈されないようにする
+function safeCell(v) { return /^[=+@\t\r]/.test(v) || (/^-/.test(v) && !/^-?\d[\d,.]*$/.test(v)) ? "'" + v : v; }
+function toCSV(data) { return data.map((r) => r.map((v) => { v = safeCell(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; }).join(",")).join("\r\n"); }
+function toTSV(data) { return data.map((r) => r.map((v) => safeCell(v).replace(/[\t\n]/g, " ")).join("\t")).join("\n"); }
+
+$("csv-btn").onclick = () => {
+  const blob = new Blob(["﻿" + toCSV(tableData())], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  const ts = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  a.href = URL.createObjectURL(blob); a.download = `${MODES[current.mode].file}_${ts}.csv`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("copy-btn").onclick = async () => {
+  const text = toTSV(tableData());
+  try { await navigator.clipboard.writeText(text); toast("コピーしました（表計算ソフトに貼り付けできます）"); }
+  catch (e) {
+    const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); ta.remove(); toast("コピーしました");
+  }
+};
+
+function resetUpload() { $("file").value = ""; $("file").onchange(); $("notice").textContent = ""; show("upload-view"); }
+$("again").onclick = resetUpload;
+init();
+</script>
+</body>
+</html>
