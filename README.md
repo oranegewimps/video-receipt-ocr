@@ -1,5 +1,7 @@
 # 動画から領収書・名刺をデータ化（プロトタイプ）
 
+[![test](https://github.com/oranegewimps/video-receipt-ocr/actions/workflows/test.yml/badge.svg)](https://github.com/oranegewimps/video-receipt-ocr/actions/workflows/test.yml)
+
 スマホで撮った動画（最長3分）をアップロードすると、映っている書類を読み取り、表とCSVで返します。身内数人で試すための最小版です。
 
 読み取る書類は、アップロード画面で3つのモードから選びます。直前に選んだモードは、そのブラウザで次回の既定値になります。
