@@ -6,7 +6,7 @@ import unicodedata
 
 from . import invoice
 from .config import Settings
-from .schema import fields
+from .schema import TXN_TYPES, fields
 
 
 def _norm(s) -> str:
@@ -19,6 +19,13 @@ def _norm(s) -> str:
 
 
 def _key(doc: dict, mode: str) -> tuple | None:
+    if mode == "journal":
+        day = (doc.get("txn_datetime") or "")[:10]
+        if doc.get("receipt_no"):
+            return ("no", day, _norm(doc["receipt_no"]))
+        if doc.get("txn_datetime") and doc.get("amount_total") is not None:
+            return ("bill", doc["txn_datetime"], doc["amount_total"])
+        return None
     if mode == "bizcard":
         if doc.get("email"):
             return ("email", _norm(doc["email"]))
@@ -46,7 +53,7 @@ def dedupe(docs: list[dict], mode: str) -> list[dict]:
         if k is not None and k in index:
             base = index[k]
             for f in names:
-                if base.get(f) is None and d.get(f) is not None:
+                if base.get(f) in (None, []) and d.get(f) not in (None, []):
                     base[f] = d[f]
                     if f in (d.get("low_confidence_fields") or []):
                         base["low_confidence_fields"].append(f)
@@ -115,4 +122,52 @@ def finalize(docs: list[dict], mode: str, settings: Settings) -> list[dict]:
             if None not in (t, e, x) and e + x != t:
                 for f in ("amount_total", "amount_excl_tax", "tax_amount"):
                     _flag(d, f)
+    elif mode == "journal":
+        for d in docs:
+            if d.get("txn_type") not in TXN_TYPES:
+                d["txn_type"] = "sale"
+            if isinstance(d.get("amount_total"), int):
+                d["amount_total"] = abs(d["amount_total"])
+            items = [i for i in (d.get("items") or []) if isinstance(i, dict)]
+            d["items"] = items
+            if any(i.get("low_confidence") for i in items):
+                _flag(d, "items")
+            # 品目の合計が、合計（内税）または合計−消費税（外税）と合わなければ要確認にする
+            amounts = [i.get("amount") for i in items]
+            total, tax = d.get("amount_total"), d.get("tax_amount")
+            if items and total is not None and None not in amounts:
+                s = sum(amounts)
+                if s != total and (tax is None or s + tax != total):
+                    _flag(d, "items")
+                    _flag(d, "amount_total")
     return docs
+
+
+def journal_summary(docs: list[dict], reports: list[dict]) -> list[dict]:
+    """精算レポートごとに、読み取った取引の合計・件数と照合する。
+
+    合計は 通常の売上 − 返品（取消は数えない）、件数は通常の売上の件数。
+    status: ok（一致）| mismatch（読み落とし・読み間違いの可能性）| not_read（レポートの数字が読めない）
+    """
+    reports = [r for r in reports if isinstance(r, dict)]
+    out = []
+    for r in reports:
+        day = r.get("report_date")
+        if day:
+            txns = [d for d in docs if (d.get("txn_datetime") or "")[:10] == day]
+        elif len(reports) == 1:  # 日付が読めなくても、レポートが1つだけなら全取引と比べる
+            txns = docs
+        else:
+            txns = []
+        total = sum((d.get("amount_total") or 0) * {"sale": 1, "refund": -1}.get(d.get("txn_type"), 0) for d in txns)
+        count = sum(1 for d in txns if d.get("txn_type") == "sale")
+        rt, rc = r.get("sales_total"), r.get("txn_count")
+        if rt is None and rc is None:
+            status = "not_read"
+        elif (rt is not None and rt != total) or (rc is not None and rc != count):
+            status = "mismatch"
+        else:
+            status = "ok"
+        out.append({"report_date": day, "report_total": rt, "report_count": rc,
+                    "read_total": total, "read_count": count, "status": status})
+    return out

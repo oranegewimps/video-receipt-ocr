@@ -29,12 +29,15 @@ class ExtractionError(Exception):
 
 
 def extract(video_path: str | Path, mode: str = "expense", *, settings: Settings | None = None,
-            model: str | None = None) -> dict:
+            model: str | None = None, hints: list[dict] | None = None) -> dict:
     """動画を解析して書類一覧を返す。mode は expense | sales | bizcard（項目は app/schema.py）。
+
+    hints はこの利用者の過去の訂正例（app/learning.py）。プロンプトに書き癖の参考として入れる。
 
     戻り値:
         {
           "documents": [ {doc_type?, first_seen, <モードの項目>..., low_confidence_fields}, ... ],
+          "reports": [ {report_date, sales_total, txn_count, first_seen}, ... ],  # journal のみ
           "model": "gemini-...",
           "usage": {"input_tokens", "output_tokens", "thought_tokens", "total_tokens"},
           "mock": bool,
@@ -44,7 +47,7 @@ def extract(video_path: str | Path, mode: str = "expense", *, settings: Settings
         raise ValueError(f"unknown mode: {mode}")
     settings = settings or load_settings()
     if settings.is_live:
-        return _extract_gemini(Path(video_path), mode, settings, model or settings.gemini_model)
+        return _extract_gemini(Path(video_path), mode, settings, model or settings.gemini_model, hints)
     return _extract_mock(mode, model or settings.gemini_model)
 
 
@@ -52,12 +55,15 @@ def extract(video_path: str | Path, mode: str = "expense", *, settings: Settings
 
 def _extract_mock(mode: str, model: str) -> dict:
     time.sleep(1.5)  # ポーリングの動作確認用
-    return {
+    out = {
         "documents": copy.deepcopy(mock_data.DOCUMENTS[mode]),
         "model": f"mock({model})",
         "usage": {"input_tokens": 0, "output_tokens": 0, "thought_tokens": 0, "total_tokens": 0},
         "mock": True,
     }
+    if mode == "journal":
+        out["reports"] = copy.deepcopy(mock_data.JOURNAL_REPORTS)
+    return out
 
 
 # ---------------------------------------------------------------- Gemini
@@ -89,7 +95,8 @@ def _wait_active(client, file, deadline_sec: int):
         file = client.files.get(name=file.name)
 
 
-def _extract_gemini(video_path: Path, mode: str, settings: Settings, model: str) -> dict:
+def _extract_gemini(video_path: Path, mode: str, settings: Settings, model: str,
+                    hints: list[dict] | None = None) -> dict:
     client = make_client(settings)
     uploaded = None
     try:
@@ -115,7 +122,7 @@ def _extract_gemini(video_path: Path, mode: str, settings: Settings, model: str)
 
         interaction = client.interactions.create(
             model=model,
-            input=[video_part, {"type": "text", "text": prompt(mode, settings)}],
+            input=[video_part, {"type": "text", "text": prompt(mode, settings, hints)}],
             response_mime_type="application/json",
             response_format={"type": "text", "mime_type": "application/json", "schema": response_schema(mode)},
             generation_config=generation_config,
@@ -137,7 +144,10 @@ def _extract_gemini(video_path: Path, mode: str, settings: Settings, model: str)
             "thought_tokens": (u.total_thought_tokens if u else None) or 0,
             "total_tokens": (u.total_tokens if u else None) or 0,
         }
-        return {"documents": data.get("documents") or [], "model": model, "usage": usage, "mock": False}
+        out = {"documents": data.get("documents") or [], "model": model, "usage": usage, "mock": False}
+        if mode == "journal":
+            out["reports"] = data.get("reports") or []
+        return out
     finally:
         if uploaded is not None:
             delete_gemini_file(client, uploaded.name)

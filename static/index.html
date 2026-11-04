@@ -38,7 +38,10 @@
   button:disabled { opacity: .5; cursor: default; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .stack > * + * { margin-top: 12px; }
-  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .modes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  @media (min-width: 640px) { .modes { grid-template-columns: repeat(4, 1fr); } }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .tabs button.active { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .modes label { display: block; border: 1px solid var(--line); border-radius: 10px; padding: 10px 8px;
                  text-align: center; cursor: pointer; }
   .modes input { position: absolute; opacity: 0; pointer-events: none; }
@@ -60,6 +63,7 @@
   td[contenteditable]:focus { box-shadow: inset 0 0 0 2px var(--accent); }
   td.low { background: var(--warn-bg); }
   td.edited { background: var(--edited); }
+  select { padding: 8px; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.nowrap { white-space: nowrap; }
   .badge { display: inline-block; font-size: 12px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
@@ -68,6 +72,9 @@
   .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
                          margin-right: 4px; vertical-align: -1px; border: 1px solid var(--line); }
   .legend .l-low::before { background: var(--warn-bg); } .legend .l-ed::before { background: var(--edited); }
+  .learn { border-top: 1px solid var(--line); padding-top: 12px; }
+  .learn label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+  .learn input[type=checkbox] { width: 20px; height: 20px; margin: 2px 0 0; flex: none; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text);
            color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; }
 </style>
@@ -94,6 +101,7 @@
       <input type="radio" name="mode" id="m-expense" value="expense"><label for="m-expense"><strong>経費精算</strong><span>受け取った領収書</span></label>
       <input type="radio" name="mode" id="m-sales" value="sales"><label for="m-sales"><strong>売上管理</strong><span>発行した領収書</span></label>
       <input type="radio" name="mode" id="m-bizcard" value="bizcard"><label for="m-bizcard"><strong>名刺</strong><span>名刺の整理</span></label>
+      <input type="radio" name="mode" id="m-journal" value="journal"><label for="m-journal"><strong>レジジャーナル</strong><span>レジの控えロール</span></label>
     </div>
     <p id="issuer-warn" class="notice hidden">発行者情報（SELF_NAME 等）が設定されていないため、発行者の照合は行いません。</p>
     <label class="file-label">
@@ -103,6 +111,20 @@
     </label>
     <button id="upload-btn" class="primary" type="button" disabled>解析する</button>
     <p class="muted">動画は解析が終わるとすぐに削除されます。結果は<span id="ttl">60</span>分後に消えるので、必要な分はCSVで保存してください。</p>
+    <div id="learn-box" class="learn stack hidden">
+      <label><input type="checkbox" id="learn-toggle">
+        <span><strong>直した文字を、次回の読み取りに活かす</strong><br>
+        <span class="muted">オンにすると、表で直した項目の「読み取り結果」と「正しい値」だけを暗号化して保存し、次回からあなたの読み取りの参考にします。動画や画像は保存しません。<span id="learn-count"></span></span></span>
+      </label>
+      <button type="button" id="learn-delete">学習データをすべて消す</button>
+      <div id="learn-trash" class="notice stack hidden">
+        <div id="learn-trash-text"></div>
+        <div class="row">
+          <button type="button" id="learn-restore">元に戻す</button>
+          <button type="button" id="learn-purge">今すぐ完全に消す</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- 進行状況 -->
@@ -120,13 +142,32 @@
       <div class="row" style="justify-content:space-between">
         <h2><span id="result-title"></span> <span id="result-count" class="muted"></span></h2>
         <div class="row">
+          <button type="button" id="learn-save" class="hidden" disabled>直した内容を学習させる</button>
+          <button type="button" id="xlsx-btn">エクセルに追記</button>
           <button type="button" id="copy-btn">コピー</button>
           <button type="button" id="csv-btn">CSV保存</button>
         </div>
       </div>
       <p id="issuer-line" class="muted hidden"></p>
+      <div id="report-line" class="notice stack hidden"></div>
+      <div id="view-tabs" class="tabs hidden" aria-label="表示の切り替え"></div>
+      <p id="view-note" class="muted hidden"></p>
       <div class="legend"><span class="l-low">要確認（推定した項目・読み取りに自信がない項目）</span><span class="l-ed">手で修正済み</span></div>
       <div class="table-wrap"><table id="result-table"></table></div>
+      <div id="xlsx-panel" class="learn stack hidden" style="margin-top:16px">
+        <strong>自分のエクセルに追記する</strong>
+        <p class="muted">いま表示している表を、お手持ちのエクセル（.xlsx）の表の一番下に書き足したファイルを、別の名前で作ります。元のファイルはそのまま残ります。送ったファイルはサーバに保存せず、作り終えたらすぐ捨てます。</p>
+        <input type="file" id="xlsx-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <div id="xlsx-config" class="stack hidden">
+          <label class="row">シート <select id="xlsx-sheet"></select></label>
+          <p id="xlsx-where" class="muted"></p>
+          <div id="xlsx-warn" class="notice hidden"></div>
+          <div class="table-wrap"><table id="xlsx-map"></table></div>
+          <p id="xlsx-unused" class="muted hidden"></p>
+          <button type="button" id="xlsx-go" class="primary">追記したファイルを作る</button>
+        </div>
+        <p id="xlsx-err" class="error hidden"></p>
+      </div>
     </div>
     <button id="again" class="primary" type="button">別の動画を解析する</button>
   </section>
@@ -165,8 +206,29 @@ const MODES = {
            ["address", "住所", true], ["phone", "電話", true], ["email", "メール", true], ["first_seen", "映った時刻", false]],
     csvExtra: [],
   },
+  journal: {
+    title: "レジジャーナル", file: "journal",
+    hint: "ジャーナルのロールを少しずつ送りながら、印字がはっきり読める速さで映してください。精算レポートも映すと合計を照合します",
+    views: [
+      { id: "txn", label: "取引ごと（会計用）", file: "journal_transactions", csvExtra: [],
+        cols: [["txn_datetime", "日時", true], ["receipt_no", "レシートNo", true], ["_txn_type", "種類", false],
+               ["amount_total", "合計(税込)", true], ["tax_amount", "消費税", true], ["tax_rate", "税率", true],
+               ["payment_method", "支払方法", true], ["_items", "品目", false], ["first_seen", "映った時刻", false]],
+        rows: (docs) => docs.map((d, i) => ({ obj: d, index: i })) },
+      { id: "items", label: "品目ごと", file: "journal_items", csvExtra: [],
+        note: "1品目＝1行です。値引はマイナスの金額で入っています。ここで直した内容は、学習には使いません。",
+        cols: [["^txn_datetime", "日時", false], ["^receipt_no", "レシートNo", false], ["^_txn_type", "種類", false],
+               ["name", "品名", true], ["unit_price", "単価", true], ["quantity", "数量", true], ["amount", "金額", true]],
+        rows: (docs) => itemRows(docs) },
+      { id: "abc", label: "商品別集計（ABC）", file: "journal_abc", csvExtra: [],
+        note: "売上金額の多い順に並べ、累計構成比が70%までをA、90%までをB、残りをCとしています。取消は除き、返品は差し引き、値引の行は含めていません。",
+        cols: [["rank", "順位", false], ["name", "品名", false], ["quantity", "数量", false], ["amount", "売上金額", false],
+               ["share", "構成比", false], ["cum", "累計構成比", false], ["abc", "ランク", false]],
+        rows: (docs) => abcRows(docs) },
+    ],
+  },
 };
-const NUM_KEYS = new Set(["amount", "amount_total", "amount_excl_tax", "tax_amount"]);
+const NUM_KEYS = new Set(["amount", "amount_total", "amount_excl_tax", "tax_amount", "unit_price", "quantity", "rank", "share", "cum"]);
 let me = null, pollTimer = null, current = null; // current = { mode, docs }
 
 function show(...ids) {
@@ -200,6 +262,7 @@ document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListe
 async function init() {
   try { me = await api("/api/me"); } catch (e) { show("login-view"); return; }
   renderLimits();
+  renderLearning();
   applyMode(load("local", "mode") || "expense");
   const jobId = load("session", "job");
   if (jobId) { show("status-view"); $("status-text").textContent = "解析中…"; $("progress").removeAttribute("value"); poll(jobId); }
@@ -210,6 +273,54 @@ function renderLimits() {
   $("ttl").textContent = me.result_ttl_min;
   $("limits").textContent = `本日あと ${me.remaining_today} 回 ・ 最大 ${me.max_upload_mb}MB ・ 先頭${m}分まで解析` + (me.gemini_mode === "mock" ? " ・ 【モック動作中：固定のサンプル結果を返します】" : "");
 }
+
+// ---------- 学習（訂正履歴）
+function renderLearning() {
+  const l = me.learning || {};
+  $("learn-box").classList.toggle("hidden", !l.available);
+  $("learn-toggle").checked = !!l.enabled;
+  $("learn-count").textContent = l.available ? ` 保存済み：${l.count}件（最後に直した日から${l.retention_days}日で自動で消えます）` : "";
+  $("learn-delete").disabled = !l.count;
+  const tr = l.trash || { count: 0 };
+  $("learn-trash").classList.toggle("hidden", !tr.count);
+  if (tr.count) {
+    const d = new Date(tr.purge_at * 1000);
+    $("learn-trash-text").textContent = `削除済み：${tr.count}件。${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}ごろに完全に消えます。それまでは元に戻せます。`;
+  }
+}
+$("learn-toggle").onchange = async () => {
+  try { me.learning = await api("/api/learning", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: $("learn-toggle").checked }) }); }
+  catch (e) { alert(e.message); }
+  renderLearning();
+};
+$("learn-delete").onclick = async () => {
+  const days = (me.learning || {}).trash_days;
+  if (!confirm(`保存した学習データをすべて消します。読み取りには使わなくなり、${days}日後に完全に消えます。それまでは元に戻せます。よろしいですか？`)) return;
+  try { const r = await api("/api/learning", { method: "DELETE" }); me.learning = r; toast(`${r.deleted}件を削除済みにしました`); }
+  catch (e) { alert(e.message); }
+  renderLearning();
+};
+$("learn-restore").onclick = async () => {
+  try { const r = await api("/api/learning/restore", { method: "POST" }); me.learning = r; toast(`${r.restored}件を元に戻しました`); }
+  catch (e) { alert(e.message); }
+  renderLearning();
+};
+$("learn-purge").onclick = async () => {
+  if (!confirm("削除済みの学習データを今すぐ完全に消します。もう元に戻せません。よろしいですか？")) return;
+  try { const r = await api("/api/learning?permanent=true", { method: "DELETE" }); me.learning = r; toast(`${r.deleted}件を完全に消しました`); }
+  catch (e) { alert(e.message); }
+  renderLearning();
+};
+function editedCells() { return current ? [...current.edits.values()] : []; }
+$("learn-save").onclick = async () => {
+  const edits = editedCells();
+  if (!edits.length) return;
+  try {
+    const r = await api(`/api/jobs/${current.jobId}/corrections`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ edits }) });
+    me.learning = r; renderLearning();
+    toast(r.saved ? `${r.saved}件の訂正を保存しました。次回の読み取りから参考にします` : "保存する訂正はありませんでした");
+  } catch (e) { alert(e.message); }
+};
 
 $("login-btn").onclick = async () => {
   $("login-err").classList.add("hidden");
@@ -306,14 +417,45 @@ function issuerBadge(d) {
 function computed(key, d) {
   if (key === "_invoice") return { html: invoiceBadge(d), text: { none: "", invalid: "形式NG", ok: "形式OK" }[checkInvoice(d.invoice_number)] };
   if (key === "_issuer") return { html: issuerBadge(d), text: issuerText(d) };
+  if (key === "_txn_type") {
+    const label = TXN_LABEL[d.txn_type] || "売上";
+    return { html: d.txn_type && d.txn_type !== "sale" ? `<span class="badge ng">${label}</span>` : label, text: label };
+  }
+  if (key === "_items") {
+    const text = (d.items || []).map((it) => `${it.name || "（読めない）"}${num(it.quantity) > 1 ? "×" + it.quantity : ""}`).join("、");
+    return { html: esc(text), text };
+  }
   return { html: "", text: "" };
 }
 
 // ---------- 結果表示
+// 表示（ビュー）: cols の各列は [キー, 見出し, 編集可]。キーが ^ で始まる列は親（取引）の値、_ で始まる列は計算列。
+// rows(docs) は表の行 { obj: 値を持つオブジェクト, parent?: 取引, index?: 取引の番号（学習の対象になる行だけ） } を返す
+function viewsOf(mode) {
+  const def = MODES[mode];
+  if (def.views) return def.views;
+  return [{ id: "main", label: def.title, cols: def.cols, csvExtra: def.csvExtra, file: def.file,
+            rows: (docs) => docs.map((d, i) => ({ obj: d, index: i })) }];
+}
+function currentView() { const vs = viewsOf(current.mode); return vs.find((v) => v.id === current.view) || vs[0]; }
+
+function cellValue(row, key) {
+  const parent = key.startsWith("^");
+  const k = parent ? key.slice(1) : key;
+  const o = parent ? row.parent : row.obj;
+  if (k.startsWith("_")) return computed(k, o);
+  const v = o[k];
+  const text = k === "doc_type" ? (DOC_LABEL[v] || v || "") : (v == null ? "" : String(v));
+  return { html: esc(text), text };
+}
+
 function renderResult(job) {
   const mode = MODES[job.mode] ? job.mode : "expense";
   const def = MODES[mode];
-  current = { mode, docs: job.documents || [] };
+  current = { mode, docs: job.documents || [], jobId: job.job_id, reports: job.reports || [], edits: new Map(),
+              view: viewsOf(mode)[0].id };
+  const learnOn = !!(me && me.learning && me.learning.enabled);
+  $("learn-save").classList.toggle("hidden", !learnOn); $("learn-save").disabled = true;
   $("result-title").textContent = def.title;
   $("result-count").textContent = `${current.docs.length}件`;
 
@@ -326,64 +468,160 @@ function renderResult(job) {
     il.classList.remove("hidden");
   } else il.classList.add("hidden");
 
-  const t = $("result-table");
-  t.innerHTML = "";
-  const head = t.createTHead().insertRow();
-  for (const [, label] of def.cols) { const th = document.createElement("th"); th.textContent = label; head.appendChild(th); }
-  const tbody = t.createTBody();
-  if (!current.docs.length) {
-    const td = tbody.insertRow().insertCell(); td.colSpan = def.cols.length; td.className = "muted"; td.textContent = "見つかりませんでした";
+  const tabs = $("view-tabs");
+  tabs.innerHTML = "";
+  const views = viewsOf(mode);
+  tabs.classList.toggle("hidden", views.length < 2);
+  for (const v of views) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = v.label; b.dataset.view = v.id;
+    b.onclick = () => { current.view = v.id; renderTable(); };
+    tabs.appendChild(b);
   }
-  for (const d of current.docs) {
-    const tr = tbody.insertRow();
-    tr._doc = d;
-    for (const [key, , editable] of def.cols) {
-      const td = tr.insertCell();
-      td.dataset.key = key;
-      if (key.startsWith("_")) { td.innerHTML = computed(key, d).html; continue; }
-      const v = d[key];
-      td.textContent = key === "doc_type" ? (DOC_LABEL[v] || v) : (v == null ? "" : String(v));
-      if (NUM_KEYS.has(key)) td.classList.add("num");
-      if (NUM_KEYS.has(key) || /date$|first_seen|receipt_no/.test(key)) td.classList.add("nowrap");
-      if ((d.low_confidence_fields || []).includes(key)) { td.classList.add("low"); td.title = "推定した値か、読み取りに自信がない値です。確認してください"; }
-      if (editable) {
-        td.contentEditable = "plaintext-only";
-        if (td.contentEditable !== "plaintext-only") td.contentEditable = "true";
-        td.addEventListener("input", () => {
-          td.classList.remove("low"); td.classList.add("edited");
-          d[key] = td.textContent.trim() || null;
-          if (key === "invoice_number") { d.invoice_lookup = null; tr.querySelector('[data-key="_invoice"]').innerHTML = invoiceBadge(d); }
-        });
-        td.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); td.blur(); } });
-      }
-    }
-  }
+  renderTable();
+  renderReports();
 
   const notes = [];
   if ($("notice").textContent) notes.push($("notice").textContent);
   else if (job.notice) notes.push(job.notice);
+  if (job.hints_used) notes.push(`これまでに直した${job.hints_used}件の訂正を参考にして読み取りました。`);
   notes.push(`この結果は約${Math.round(job.expires_in_sec / 60)}分後にサーバから削除されます。`);
   $("result-notice").textContent = notes.join(" ");
   $("result-notice").classList.remove("hidden");
   show("result-view");
-  api("/api/me").then((m) => { me = m; renderLimits(); }).catch(() => {});
+  api("/api/me").then((m) => { me = m; renderLimits(); renderLearning(); }).catch(() => {});
+}
+
+function renderTable() {
+  const view = currentView();
+  setTimeout(() => { if (xlsx.b64) xlsxInspect(); }, 0);
+  for (const b of $("view-tabs").children) b.classList.toggle("active", b.dataset.view === view.id);
+  $("view-note").textContent = view.note || "";
+  $("view-note").classList.toggle("hidden", !view.note);
+  const t = $("result-table");
+  t.innerHTML = "";
+  const head = t.createTHead().insertRow();
+  for (const [, label] of view.cols) { const th = document.createElement("th"); th.textContent = label; head.appendChild(th); }
+  const tbody = t.createTBody();
+  const rows = view.rows(current.docs);
+  if (!rows.length) {
+    const td = tbody.insertRow().insertCell(); td.colSpan = view.cols.length; td.className = "muted"; td.textContent = "見つかりませんでした";
+  }
+  for (const row of rows) {
+    const tr = tbody.insertRow();
+    tr._row = row;
+    const o = row.obj;
+    for (const [key, , editable] of view.cols) {
+      const td = tr.insertCell();
+      td.dataset.key = key;
+      const own = !key.startsWith("^");
+      const k = own ? key : key.slice(1);
+      td.innerHTML = cellValue(row, key).html;
+      if (NUM_KEYS.has(k)) td.classList.add("num");
+      if (NUM_KEYS.has(k) || /date|first_seen|receipt_no/.test(k)) td.classList.add("nowrap");
+      const lowList = own ? (o.low_confidence_fields || []) : [];
+      if (lowList.includes(k) || (k === "_items" && lowList.includes("items")) || (own && o.low_confidence)) {
+        td.classList.add("low"); td.title = "推定した値か、読み取りに自信がない値です。確認してください";
+      }
+      if (own && o._edited && o._edited.has(k)) td.classList.add("edited");
+      if (!editable) continue;
+      td.contentEditable = "plaintext-only";
+      if (td.contentEditable !== "plaintext-only") td.contentEditable = "true";
+      td.addEventListener("input", () => {
+        td.classList.remove("low"); td.classList.add("edited");
+        const value = td.textContent.trim();
+        o[k] = value || null;
+        (o._edited = o._edited || new Set()).add(k);
+        if (row.index != null) {
+          current.edits.set(`${row.index}\t${k}`, { index: row.index, field: k, value });
+          $("learn-save").disabled = false;
+        }
+        if (k === "invoice_number") { o.invoice_lookup = null; tr.querySelector('[data-key="_invoice"]').innerHTML = invoiceBadge(o); }
+        if (current.mode === "journal") renderReports();
+      });
+      td.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); td.blur(); } });
+    }
+  }
+}
+
+// ---------- レジジャーナル
+const TXN_LABEL = { sale: "売上", refund: "返品", void: "取消" };
+const TXN_SIGN = { sale: 1, refund: -1, void: 0 };
+function num(v) {
+  if (v == null || v === "") return null;
+  const n = Number(String(v).replace(/[,¥円\s]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+function itemRows(docs) {
+  const rows = [];
+  docs.forEach((d) => (d.items || []).forEach((it) => rows.push({ obj: it, parent: d })));
+  return rows;
+}
+// 商品別の売上を集計し、累計構成比で A（〜70%）・B（〜90%）・C に分ける。取消は除き、返品は差し引く。値引の行は除く
+function abcRows(docs) {
+  const by = new Map();
+  for (const d of docs) {
+    const sign = TXN_SIGN[d.txn_type] ?? 1;
+    if (!sign) continue;
+    for (const it of d.items || []) {
+      const amount = num(it.amount);
+      if (amount == null || amount < 0) continue;
+      const name = (it.name || "").trim() || "（読めない品目）";
+      const g = by.get(name) || { name, quantity: 0, amount: 0 };
+      g.quantity += sign * (num(it.quantity) ?? 1);
+      g.amount += sign * amount;
+      by.set(name, g);
+    }
+  }
+  const list = [...by.values()].filter((g) => g.amount > 0).sort((a, b) => b.amount - a.amount);
+  const total = list.reduce((s, g) => s + g.amount, 0);
+  const pct = (x) => (x * 100).toFixed(1) + "%";
+  let cum = 0;
+  return list.map((g, i) => {
+    const before = cum / total;
+    cum += g.amount;
+    return { obj: { rank: i + 1, name: g.name, quantity: g.quantity, amount: g.amount, share: pct(g.amount / total),
+                    cum: pct(cum / total), abc: before < 0.7 ? "A" : before < 0.9 ? "B" : "C" } };
+  });
+}
+// サーバの postprocess.journal_summary と同じ計算。表で直した値を反映するため画面でも計算し直す
+function journalCheck(docs, reports) {
+  return reports.map((r) => {
+    const day = r.report_date;
+    const txns = day ? docs.filter((d) => (d.txn_datetime || "").slice(0, 10) === day) : (reports.length === 1 ? docs : []);
+    const total = txns.reduce((s, d) => s + (num(d.amount_total) || 0) * (TXN_SIGN[d.txn_type] ?? 0), 0);
+    const count = txns.filter((d) => d.txn_type === "sale").length;
+    const rt = r.report_total, rc = r.report_count;
+    const status = rt == null && rc == null ? "not_read"
+      : ((rt != null && rt !== total) || (rc != null && rc !== count)) ? "mismatch" : "ok";
+    return { ...r, read_total: total, read_count: count, status };
+  });
+}
+function renderReports() {
+  const box = $("report-line");
+  if (current.mode !== "journal") { box.classList.add("hidden"); return; }
+  const yen = (n) => n == null ? "？" : `${n.toLocaleString()}円`;
+  const checks = journalCheck(current.docs, current.reports);
+  box.innerHTML = checks.length ? checks.map((c) => {
+    const [cls, label] = { ok: ["ok", "一致"], mismatch: ["ng", "合いません"], not_read: ["na", "レポートが読めません"] }[c.status];
+    const hint = c.status === "mismatch" ? "（読み落とし・読み間違いがあるかもしれません）" : "";
+    return `<div>精算レポート ${esc(c.report_date || "（日付なし）")}：${yen(c.report_total)}・${c.report_count ?? "？"}件 ／ ` +
+           `読み取った取引：${yen(c.read_total)}・${c.read_count}件 <span class="badge ${cls}">${label}</span>${hint}</div>`;
+  }).join("") : '<div class="muted">精算レポートは映っていませんでした（合計の照合はしていません）</div>';
+  box.classList.remove("hidden");
 }
 
 // ---------- 出力
 function tableData() {
-  const def = MODES[current.mode];
-  const header = [...def.cols.map((c) => c[1]), ...def.csvExtra.map((c) => c[1])];
+  const view = currentView();
+  const extra = view.csvExtra || [];
+  const header = [...view.cols.map((c) => c[1]), ...extra.map((c) => c[1])];
   const rows = [];
   for (const tr of $("result-table").tBodies[0]?.rows || []) {
-    const d = tr._doc;
-    if (!d) continue;
+    const row = tr._row;
+    if (!row) continue;
     rows.push([
-      ...def.cols.map(([key]) => {
-        if (key.startsWith("_")) return computed(key, d).text;
-        const td = tr.querySelector(`[data-key="${key}"]`);
-        return td ? td.textContent.trim() : "";
-      }),
-      ...def.csvExtra.map(([key]) => (d[key] == null ? "" : String(d[key]))),
+      ...view.cols.map(([key]) => cellValue(row, key).text.trim()),
+      ...extra.map(([key]) => (row.obj[key] == null ? "" : String(row.obj[key]))),
     ]);
   }
   return [header, ...rows];
@@ -397,7 +635,7 @@ $("csv-btn").onclick = () => {
   const blob = new Blob(["﻿" + toCSV(tableData())], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   const ts = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  a.href = URL.createObjectURL(blob); a.download = `${MODES[current.mode].file}_${ts}.csv`;
+  a.href = URL.createObjectURL(blob); a.download = `${currentView().file}_${ts}.csv`;
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 $("copy-btn").onclick = async () => {
@@ -407,6 +645,104 @@ $("copy-btn").onclick = async () => {
     const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select();
     document.execCommand("copy"); ta.remove(); toast("コピーしました");
   }
+};
+
+// ---------- エクセルへの追記
+// 対応（相手の見出し → こちらの列）は、モードと表示ごとにこのブラウザに覚えておく
+const xlsx = { b64: null, name: "", info: null };
+function xlsxKey() { return `xlsxmap:${current.mode}:${currentView().id}`; }
+function normHead(s) { return String(s || "").normalize("NFKC").toLowerCase().replace(/\(.*?\)|（.*?）|[\s.・:：/／]/g, ""); }
+function xlsxErr(msg) { $("xlsx-err").textContent = msg || ""; $("xlsx-err").classList.toggle("hidden", !msg); }
+
+$("xlsx-btn").onclick = () => $("xlsx-panel").classList.toggle("hidden");
+$("xlsx-file").onchange = () => {
+  const f = $("xlsx-file").files[0];
+  xlsx.b64 = null; $("xlsx-config").classList.add("hidden"); xlsxErr("");
+  if (!f) return;
+  if (!/\.xlsx$/i.test(f.name)) { xlsxErr(".xlsx 形式のファイルを選んでください（.xls や .xlsm は使えません）"); return; }
+  const r = new FileReader();
+  r.onload = () => { xlsx.b64 = String(r.result).split(",")[1]; xlsx.name = f.name; xlsxInspect(); };
+  r.onerror = () => xlsxErr("ファイルを読み込めませんでした");
+  r.readAsDataURL(f);
+};
+async function xlsxInspect() {
+  xlsxErr("");
+  try {
+    xlsx.info = await api("/api/xlsx/inspect", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_b64: xlsx.b64, header: tableData()[0] }) });
+  } catch (e) { xlsxErr(e.message); $("xlsx-config").classList.add("hidden"); return; }
+  const sel = $("xlsx-sheet");
+  sel.innerHTML = "";
+  for (const sh of xlsx.info.sheets) { const o = document.createElement("option"); o.value = o.textContent = sh.name; sel.appendChild(o); }
+  sel.value = xlsx.info.active;
+  const w = xlsx.info.warnings;
+  $("xlsx-warn").textContent = w.length ? `このファイルには「${w.join("・")}」が含まれています。作り直したファイルでは、これらが消えたり崩れたりすることがあります。元のファイルは残るので、中身を確かめてから使ってください。` : "";
+  $("xlsx-warn").classList.toggle("hidden", !w.length);
+  xlsxRenderMap();
+  $("xlsx-config").classList.remove("hidden");
+}
+$("xlsx-sheet").onchange = () => xlsxRenderMap();
+function xlsxSheet() { return xlsx.info.sheets.find((s) => s.name === $("xlsx-sheet").value) || xlsx.info.sheets[0]; }
+function xlsxRenderMap() {
+  const sh = xlsxSheet();
+  const ours = tableData()[0];
+  let saved = {};
+  try { saved = JSON.parse(load("local", xlsxKey()) || "{}"); } catch (e) {}
+  $("xlsx-where").textContent = sh.headers.length
+    ? `見出しは${sh.header_row}行目、${sh.last_row + 1}行目から ${tableData().length - 1} 行を書き足します。`
+    : "このシートには見出しが見つかりませんでした。1行目から書き足します。";
+  const t = $("xlsx-map");
+  t.innerHTML = "";
+  const h = t.createTHead().insertRow();
+  for (const label of ["エクセルの列", "入れるもの"]) { const th = document.createElement("th"); th.textContent = label; h.appendChild(th); }
+  const tb = t.createTBody();
+  for (const hd of sh.headers) {
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = hd.text;
+    const sel = document.createElement("select");
+    sel.dataset.col = hd.col; sel.dataset.head = normHead(hd.text);
+    for (const label of ["", ...ours]) { const o = document.createElement("option"); o.value = label; o.textContent = label || "（入れない）"; sel.appendChild(o); }
+    const pick = saved[sel.dataset.head] ?? sh.suggested[hd.col] ?? "";
+    sel.value = ours.includes(pick) ? pick : "";
+    sel.onchange = xlsxUnused;
+    tr.insertCell().appendChild(sel);
+  }
+  xlsxUnused();
+}
+function xlsxMapping() {
+  const m = {};
+  for (const sel of $("xlsx-map").querySelectorAll("select")) if (sel.value) m[sel.dataset.col] = sel.value;
+  return m;
+}
+function xlsxUnused() {
+  const used = new Set(Object.values(xlsxMapping()));
+  const rest = tableData()[0].filter((h) => !used.has(h));
+  $("xlsx-unused").textContent = rest.length ? `エクセルに入らない列：${rest.join("、")}` : "";
+  $("xlsx-unused").classList.toggle("hidden", !rest.length);
+}
+$("xlsx-go").onclick = async () => {
+  const sh = xlsxSheet();
+  const mapping = xlsxMapping();
+  if (!Object.keys(mapping).length) { xlsxErr("入れる列を1つ以上選んでください"); return; }
+  const saved = {};
+  for (const sel of $("xlsx-map").querySelectorAll("select")) saved[sel.dataset.head] = sel.value;
+  store("local", xlsxKey(), JSON.stringify(saved));
+  const data = tableData();
+  xlsxErr(""); $("xlsx-go").disabled = true;
+  try {
+    const r = await fetch("/api/xlsx/append", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_b64: xlsx.b64, filename: xlsx.name, sheet: sh.name, header_row: sh.header_row, mapping, header: data[0], rows: data.slice(1) }) });
+    if (!r.ok) { let b = null; try { b = await r.json(); } catch (e) {} throw new Error((b && b.detail) || `エラー (${r.status})`); }
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename\*=UTF-8''([^;]+)/);
+    const info = JSON.parse(decodeURIComponent(r.headers.get("X-Export-Info") || "%7B%7D"));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = m ? decodeURIComponent(m[1]) : "export.xlsx";
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(`「${info.sheet}」の${info.first_row}行目から${info.appended}行を追記しました`);
+  } catch (e) { xlsxErr(e.message); }
+  finally { $("xlsx-go").disabled = false; }
 };
 
 function resetUpload() { $("file").value = ""; $("file").onchange(); $("notice").textContent = ""; show("upload-view"); }

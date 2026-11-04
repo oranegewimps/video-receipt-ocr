@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import copy
 import logging
 import shutil
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from . import extractor, media, postprocess
 from .config import Settings
+from .learning import LearningStore
 from .usage import UsageStore, estimate_cost
 
 log = logging.getLogger("vro.jobs")
@@ -35,11 +37,16 @@ class Job:
     model: str | None = None
     finished: float | None = None
     expires: float = 0.0
+    hints_used: int = 0
+    reports: list[dict] | None = None  # journal のみ：精算レポートとの照合結果
+    # 訂正との比較用に、読み取った直後の結果を持っておく（結果と一緒に期限で消える）
+    original: list[dict] | None = None
 
     def public(self) -> dict:
         return {
             "job_id": self.id, "mode": self.mode, "status": self.status, "notice": self.notice, "error": self.error,
-            "documents": self.documents, "model": self.model,
+            "documents": self.documents, "model": self.model, "hints_used": self.hints_used,
+            "reports": self.reports,
             "expires_in_sec": max(0, int(self.expires - time.time())),
         }
 
@@ -49,6 +56,7 @@ class JobManager:
     settings: Settings
     usage: UsageStore
     extract_fn: object = None  # テストで差し替えられるように
+    learning: LearningStore | None = None
     _jobs: dict[str, Job] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -104,8 +112,14 @@ class JobManager:
         status = "error"
         try:
             prepared = media.prepare(video, job_dir / "prepared.mp4", probe, self.settings)
-            result = self.extract_fn(prepared, job.mode, settings=self.settings)
+            hints = self.learning.hints(job.owner, job.mode, self.settings.learning_max_hints) if self.learning else []
+            job.hints_used = len(hints)
+            kwargs = {"hints": hints} if hints else {}
+            result = self.extract_fn(prepared, job.mode, settings=self.settings, **kwargs)
             job.documents = postprocess.finalize(result["documents"], job.mode, self.settings)
+            if job.mode == "journal":
+                job.reports = postprocess.journal_summary(job.documents, result.get("reports") or [])
+            job.original = copy.deepcopy(job.documents)
             job.model = result.get("model")
             job.status = status = "done"
         except media.MediaError as e:
@@ -126,9 +140,9 @@ class JobManager:
             model = (result or {}).get("model")
             cost = estimate_cost(model, usage, self.settings.prices) if model else None
             self.usage.finish(job.id, status, model, usage, elapsed, cost)
-            log.info("job finished id=%s mode=%s status=%s elapsed=%.1fs in_tok=%s out_tok=%s think_tok=%s",
+            log.info("job finished id=%s mode=%s status=%s elapsed=%.1fs in_tok=%s out_tok=%s think_tok=%s hints=%d",
                      job.id, job.mode, status, elapsed, usage.get("input_tokens"), usage.get("output_tokens"),
-                     usage.get("thought_tokens"))
+                     usage.get("thought_tokens"), job.hints_used)
 
     # ---------------------------------------------------------- 掃除
 

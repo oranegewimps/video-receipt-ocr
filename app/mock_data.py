@@ -59,4 +59,38 @@ BIZCARD = [
      "low_confidence_fields": ["name"]},
 ]
 
-DOCUMENTS = {"expense": EXPENSE, "sales": SALES, "bizcard": BIZCARD}
+def _item(name, unit_price, quantity, amount, low=False):
+    return {"name": name, "unit_price": unit_price, "quantity": quantity, "amount": amount, "low_confidence": low}
+
+
+_NULL_JOURNAL = {"txn_datetime": None, "receipt_no": None, "txn_type": "sale", "amount_total": None,
+                 "tax_amount": None, "tax_rate": None, "payment_method": None, "items": []}
+
+JOURNAL = [
+    {**_NULL_JOURNAL, "first_seen": "00:02", "txn_datetime": "2026-11-01 10:05", "receipt_no": "0001",
+     "amount_total": 1080, "tax_amount": 80, "tax_rate": "8%", "payment_method": "現金",
+     "items": [_item("食パン", 300, 2, 600), _item("牛乳", 240, 2, 480)], "low_confidence_fields": []},
+    # ロールを送る途中で同じ取引が再び映ったもの（レシート番号が一致するので統合される）
+    {**_NULL_JOURNAL, "first_seen": "00:04", "txn_datetime": "2026-11-01 10:05", "receipt_no": "0001",
+     "amount_total": 1080, "items": [], "low_confidence_fields": []},
+    {**_NULL_JOURNAL, "first_seen": "00:07", "txn_datetime": "2026-11-01 11:42", "receipt_no": "0002",
+     "amount_total": 1700, "tax_amount": 125, "tax_rate": "8%,10%", "payment_method": "電子マネー",
+     "items": [_item("コーヒー豆", 1200, 1, 1200), _item("紙袋", 50, 1, 50), _item(None, None, 1, 500, True),
+               _item("値引", None, None, -50)],
+     "low_confidence_fields": ["items"]},
+    {**_NULL_JOURNAL, "first_seen": "00:11", "txn_datetime": "2026-11-01 12:10", "receipt_no": "0003",
+     "txn_type": "refund", "amount_total": 600, "payment_method": "現金",
+     "items": [_item("食パン", 300, 2, 600)], "low_confidence_fields": []},
+    {**_NULL_JOURNAL, "first_seen": "00:14", "txn_datetime": "2026-11-01 13:30", "receipt_no": "0004",
+     "amount_total": 720, "tax_amount": 53, "tax_rate": "8%", "payment_method": "QRコード決済",
+     "items": [_item("食パン", 300, 1, 300), _item("牛乳", 240, 1, 240), _item("ジャム", 180, 1, 180)],
+     "low_confidence_fields": []},
+]
+
+# 取引の合計は 1080 + 1700 - 600 + 720 = 2900、件数（通常の売上）は 3。
+# レポートは 3,400 円・4件と印字されている想定（読み落としがある例として、照合で「要確認」になる）
+JOURNAL_REPORTS = [
+    {"report_date": "2026-11-01", "sales_total": 3400, "txn_count": 4, "first_seen": "00:18"},
+]
+
+DOCUMENTS = {"expense": EXPENSE, "sales": SALES, "bizcard": BIZCARD, "journal": JOURNAL}

@@ -46,6 +46,7 @@ def settings(tmp_path) -> Settings:
         self_name="見本商店",
         self_invoice_no="T1111111111111",
         self_address="東京都サンプル区1-1",
+        learning_db_path=tmp_path / "learning.db",
     )
 
 

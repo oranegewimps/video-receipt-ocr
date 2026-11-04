@@ -4,6 +4,7 @@
   expense  経費精算（受け取った領収書・レシート・請求書）
   sales    売上管理（自分が発行した領収書。発行者情報は設定値を使う）
   bizcard  名刺
+  journal  レジのジャーナル（控えロール）。1取引＝1件で、品目は items に入れる。精算レポートは reports に入れる
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .config import Settings
 
-MODES = ("expense", "sales", "bizcard")
+MODES = ("expense", "sales", "bizcard", "journal")
 
 ACCOUNT_TITLES = [
     "旅費交通費", "会議費", "接待交際費", "消耗品費", "通信費", "新聞図書費",
@@ -54,16 +55,54 @@ _FIELDS: dict[str, list[tuple[str, str, str]]] = {
         ("phone", "string", "電話番号（代表と直通があれば直通を優先）"),
         ("email", "string", "メールアドレス"),
     ],
+    "journal": [
+        ("txn_datetime", "string", "取引日時（YYYY-MM-DD HH:MM。時刻が読めなければ YYYY-MM-DD）"),
+        ("receipt_no", "string", "レシート番号・取引番号"),
+        ("txn_type", "string", "取引の種類（sale=通常の売上, refund=返品・返金, void=取消・訂正）"),
+        ("amount_total", "integer", "合計（税込、円、整数。返品・取消でも正の数で入れる）"),
+        ("tax_amount", "integer", "消費税額（円、整数。内税・外税とも印字されている場合のみ）"),
+        ("tax_rate", "string", "税率（例 10% / 8% / 10%,8%）。印字されている場合のみ"),
+        ("payment_method", "string", "支払方法（候補リストから1つ）"),
+        ("items", "array", "品目の一覧（印字されている順）"),
+    ],
+}
+
+TXN_TYPES = ["sale", "refund", "void"]
+
+# ジャーナルの品目（1行）
+_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": ["string", "null"], "description": "品名（印字どおり）"},
+        "unit_price": {"type": ["integer", "null"], "description": "単価（円、整数）。印字されている場合のみ"},
+        "quantity": {"type": ["integer", "null"], "description": "数量・点数（印字がなければ null）"},
+        "amount": {"type": ["integer", "null"], "description": "金額（円、整数）。値引・割引はマイナス"},
+        "low_confidence": {"type": "boolean", "description": "この行の読み取りに自信がない場合 true"},
+    },
+    "required": ["name", "unit_price", "quantity", "amount", "low_confidence"],
+}
+
+# ジャーナル末尾などの精算レポート（日計）
+_REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "report_date": {"type": ["string", "null"], "description": "レポートの対象日（YYYY-MM-DD）"},
+        "sales_total": {"type": ["integer", "null"], "description": "売上合計・純売上（税込、円、整数）"},
+        "txn_count": {"type": ["integer", "null"], "description": "客数・取引件数"},
+        "first_seen": {"type": ["string", "null"], "description": "レポートが最初に映った時刻（MM:SS）"},
+    },
+    "required": ["report_date", "sales_total", "txn_count", "first_seen"],
 }
 
 _DOC_TYPES: dict[str, list[str] | None] = {
     "expense": ["receipt", "invoice"],
     "sales": ["receipt", "invoice"],
     "bizcard": None,
+    "journal": None,
 }
 
 # 推定してよい項目（推定した場合は low_confidence_fields に入れさせる）
-INFERABLE = {"expense": ["account_title"], "sales": ["sales_category"], "bizcard": []}
+INFERABLE = {"expense": ["account_title"], "sales": ["sales_category"], "bizcard": [], "journal": []}
 
 
 def fields(mode: str) -> list[str]:
@@ -77,18 +116,28 @@ def response_schema(mode: str) -> dict:
                              "description": "receipt=領収書・レシート, invoice=請求書"}
     props["first_seen"] = {"type": ["string", "null"], "description": "その書類が最初に映った動画内の時刻（MM:SS）"}
     for name, typ, desc in _FIELDS[mode]:
-        props[name] = {"type": [typ, "null"], "description": desc}
+        if typ == "array":
+            props[name] = {"type": "array", "items": _ITEM_SCHEMA, "description": desc}
+        elif name == "txn_type":
+            props[name] = {"type": "string", "enum": TXN_TYPES, "description": desc}
+        else:
+            props[name] = {"type": [typ, "null"], "description": desc}
     props["low_confidence_fields"] = {
         "type": "array",
         "items": {"type": "string", "enum": fields(mode)},
         "description": "推定した項目、または値を入れたが読み取りに自信がない項目の名前",
     }
     doc = {"type": "object", "properties": props, "required": list(props)}
-    return {
+    out = {
         "type": "object",
         "properties": {"documents": {"type": "array", "items": doc}},
         "required": ["documents"],
     }
+    if mode == "journal":
+        out["properties"]["reports"] = {"type": "array", "items": _REPORT_SCHEMA,
+                                        "description": "精算レポート（日計）。映っていなければ空の配列"}
+        out["required"].append("reports")
+    return out
 
 
 def _common_rules(inferable: str | None) -> str:
@@ -106,7 +155,20 @@ def _common_rules(inferable: str | None) -> str:
     return "\n".join(rules)
 
 
-def prompt(mode: str, settings: Settings | None = None) -> str:
+def _hint_rules(hints: list[dict]) -> str:
+    """この利用者が過去に直した読み取り例。手書きの癖（数字や字の崩し方）の手がかりとして渡す。"""
+    lines = []
+    for h in hints:
+        before = f"「{h['original']}」" if h["original"] else "空欄（読めなかった）"
+        lines.append(f"- {h['field']}: 読み取り {before} → 正しくは「{h['corrected']}」")
+    return (
+        "\n\nこの利用者の過去の訂正例（新しい順）:\n" + "\n".join(lines) + "\n"
+        "- これらは同じ人の書き癖を知るための参考にする。似た形の文字や数字があれば、この癖を踏まえて読む。\n"
+        "- 訂正例の値を、動画に映っていない書類の値としてそのまま書き写さない。必ず実際に映っている文字を読む。"
+    )
+
+
+def prompt(mode: str, settings: Settings | None = None, hints: list[dict] | None = None) -> str:
     if mode == "expense":
         body = f"""この動画には、受け取った領収書・レシート・請求書（経費精算用）が映っています。映っている書類をすべて読み取り、指定のJSONスキーマで出力してください。名刺など、それ以外の書類は出力しません。
 
@@ -134,6 +196,21 @@ def prompt(mode: str, settings: Settings | None = None) -> str:
 ルール:
 {_common_rules(None)}
 - 1枚の名刺に複数の電話番号がある場合は、直通（なければ代表）を1つ入れる。"""
+    elif mode == "journal":
+        body = f"""この動画には、レジのジャーナル（取引の控えが続けて印字されたロール紙）が映っています。ロールを送りながら撮影しているので、同じ部分が何度も映ります。印字されている取引をすべて読み取り、指定のJSONスキーマで出力してください。
+
+ルール:
+{_common_rules(None)}
+- 1回の会計（レシート1枚分）を documents の1件にする。区切りは、レシート番号・取引番号・日時・「合計」の行などで判断する。
+- txn_type は、通常の売上は sale、「返品」「返金」は refund、「取消」「訂正」「VOID」は void にする。
+- amount_total は、その取引の合計（税込）を正の数で入れる。返品・取消でもマイナスにしない（種類は txn_type で表す）。
+- items には品目を印字されている順に入れる。「小計」「合計」「預り」「お釣り」「消費税」「対象額」の行は品目に入れない。値引・割引は、金額をマイナスにした品目として入れる。
+- 品目の行が読めない場合は、その行の name を null、low_confidence を true にする。読めた品目だけで済ませず、行の数は印字どおりにする。
+- 精算レポート・点検レポート（「精算」「日計」「Z」「X」などと印字された、その日の合計の印字）は、取引としてではなく reports に入れる。映っていなければ reports は空にする。
+- payment_method の候補: {"、".join(PAYMENT_METHODS)}"""
     else:
         raise ValueError(f"unknown mode: {mode}")
-    return body + "\n- 書類以外（人物・背景など）については出力しない。\n"
+    body += "\n- 書類以外（人物・背景など）については出力しない。"
+    if hints:
+        body += _hint_rules(hints)
+    return body + "\n"

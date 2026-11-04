@@ -101,6 +101,13 @@ class Settings:
     self_address: str = ""
     sales_categories: list[str] = field(default_factory=lambda: list(DEFAULT_SALES_CATEGORIES))
 
+    # 学習（訂正履歴）。鍵が空なら学習機能は無効
+    learning_key: str = field(default="", repr=False)
+    learning_db_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "learning.db")
+    learning_retention_days: int = 365
+    learning_trash_days: int = 30  # 削除してから完全に消すまでの日数（この間は元に戻せる）
+    learning_max_hints: int = 30
+
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
 
@@ -149,6 +156,10 @@ def load_settings(env_file: str | os.PathLike | None = None) -> Settings:
         self_address=os.getenv("SELF_ADDRESS", "").strip(),
         sales_categories=[c.strip() for c in os.getenv("SALES_CATEGORIES", "").split(",") if c.strip()]
         or list(DEFAULT_SALES_CATEGORIES),
+        learning_key=os.getenv("LEARNING_KEY", "").strip(),
+        learning_retention_days=_int("LEARNING_RETENTION_DAYS", 365),
+        learning_trash_days=_int("LEARNING_TRASH_DAYS", 30),
+        learning_max_hints=_int("LEARNING_MAX_HINTS", 30),
         ffmpeg_bin=os.getenv("FFMPEG_BIN", "ffmpeg").strip(),
         ffprobe_bin=os.getenv("FFPROBE_BIN", "ffprobe").strip(),
     )
@@ -156,6 +167,8 @@ def load_settings(env_file: str | os.PathLike | None = None) -> Settings:
         s.work_dir = Path(os.environ["WORK_DIR"].strip())
     if os.getenv("USAGE_DB_PATH", "").strip():
         s.usage_db_path = Path(os.environ["USAGE_DB_PATH"].strip())
+    if os.getenv("LEARNING_DB_PATH", "").strip():
+        s.learning_db_path = Path(os.environ["LEARNING_DB_PATH"].strip())
     validate(s)
     return s
 
@@ -167,6 +180,15 @@ def validate(s: Settings) -> None:
         raise ValueError("GEMINI_MODE=live には GEMINI_API_KEY が必要です")
     if "onedrive" in str(s.work_dir).lower():
         raise ValueError("WORK_DIR が OneDrive 配下です。同期対象外の場所（%TEMP% 等）を指定してください")
+    if s.learning_key:
+        if "onedrive" in str(s.learning_db_path).lower():
+            raise ValueError("LEARNING_DB_PATH が OneDrive 配下です。同期対象外の場所を指定してください")
+        from cryptography.fernet import Fernet
+
+        try:
+            Fernet(s.learning_key.encode())
+        except ValueError as e:
+            raise ValueError("LEARNING_KEY の形式が正しくありません（生成方法は .env.example を参照）") from e
     if s.self_invoice_no:
         import re
         import unicodedata
